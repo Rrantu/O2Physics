@@ -145,7 +145,9 @@ struct HfTaskLc {
   Configurable<std::vector<double>> binsPt{"binsPt", std::vector<double>{hf_cuts_lc_to_p_k_pi::vecBinsPt}, "pT bin limits"};
   // ThnSparse for ML outputScores and Vars
   Configurable<bool> fillTHn{"fillTHn", false, "fill THn"};
+  // Option to fill TTree for candidates passing only single gap condition (for UPC analysis)
   Configurable<bool> fillTreeOnlySingleGap{"fillTreeOnlySingleGap", false, "fill THn"};
+  // Option to fill TTree for UPC QA (for UPC analysis)
   Configurable<bool> fillTreeUpcQa{"fillTreeUpcQa", false, "fill THn"};
   Configurable<bool> storeOccupancy{"storeOccupancy", true, "Flag to store occupancy information"};
   Configurable<int> occEstimator{"occEstimator", 2, "Occupancy estimation (None: 0, ITS: 1, FT0C: 2)"};
