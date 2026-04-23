@@ -146,9 +146,9 @@ struct HfTaskLc {
   // ThnSparse for ML outputScores and Vars
   Configurable<bool> fillTHn{"fillTHn", false, "fill THn"};
   // Option to fill TTree for candidates passing only single gap condition (for UPC analysis)
-  Configurable<bool> fillTreeOnlySingleGap{"fillTreeOnlySingleGap", false, "fill THn"};
+  Configurable<bool> fillTreeOnlySingleGap{"fillTreeOnlySingleGap", false, "Only fill the tree for candidates that pass the single-gap UPC events"};
   // Option to fill TTree for UPC QA (for UPC analysis)
-  Configurable<bool> fillTreeUpcQa{"fillTreeUpcQa", false, "fill THn"};
+  Configurable<bool> fillTreeUpcQa{"fillTreeUpcQa", false, "Fill Tree for UPC QA"};
   Configurable<bool> storeOccupancy{"storeOccupancy", true, "Flag to store occupancy information"};
   Configurable<int> occEstimator{"occEstimator", 2, "Occupancy estimation (None: 0, ITS: 1, FT0C: 2)"};
   Configurable<bool> storeProperLifetime{"storeProperLifetime", false, "Flag to store proper lifetime"};
