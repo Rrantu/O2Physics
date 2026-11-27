@@ -16,6 +16,14 @@
 /// \author Biao Zhang <biao.zhang@cern.ch>, Heidelberg University
 /// \author Ran Tu <ran.tu@cern.ch>, Fudan University
 
+// 用途：筛选 UPC Λc 候选，输出候选表及事件 QA。
+// 运行：o2-analysis-hf-task-upc-lc --configuration json://配置文件；选择一个 data/MC process。
+// 配置：工作区 taskUpcLc_mc_config.json 启用 SingleA 筛选；SingleC 运行时覆盖 --mcGapSide 1。
+// 路径：AO2D 输入和 AOD 表输出由 DPL 的 aod-file、aod-writer-* 参数控制，相对路径基于运行目录。
+// 参数：upc.* 控制 BC 扫描；gap*Threshold 控制 FIT 幅度；zdcTimeThreshold 单位 ns；mcGapSide=0(A)/1(C)。
+// 调整位置：selectGapSide 判定最终类别；runAnalysisPerCollisionWithUpc 处理 BC、筛选和写表。
+// 本次修改：保留仓库原有事件预选和 BC 处理；gap 筛选使用单侧 FIT，data 额外要求中子类别。
+
 #include "PWGHF/Core/CentralityEstimation.h"
 #include "PWGHF/Core/DecayChannels.h"
 #include "PWGHF/Core/HfHelper.h"
@@ -87,6 +95,8 @@ DECLARE_SOA_COLUMN(Multiplicity, multiplicity, int);
 DECLARE_SOA_COLUMN(Vtz, vtz, float);
 DECLARE_SOA_COLUMN(AmpFT0A, ampFT0A, float);
 DECLARE_SOA_COLUMN(AmpFT0C, ampFT0C, float);
+DECLARE_SOA_COLUMN(AmpFV0A, ampFV0A, float);
+DECLARE_SOA_COLUMN(GapSide, gapSide, int); //! Selected gap side: -1 rejected, 0 GapA, 1 GapC
 DECLARE_SOA_COLUMN(ZdcTimeZNA, zdcTimeZNA, float);
 DECLARE_SOA_COLUMN(ZdcTimeZNC, zdcTimeZNC, float);
 DECLARE_SOA_COLUMN(FlagMcMatchRec, flagMcMatchRec, int8_t);
@@ -99,6 +109,8 @@ DECLARE_SOA_TABLE(HfUpcQa, "AOD", "HFUPCQA",
                   full::Vtz,
                   full::AmpFT0A,
                   full::AmpFT0C,
+                  full::AmpFV0A,
+                  full::GapSide,
                   full::ZdcTimeZNA,
                   full::ZdcTimeZNC,
                   full::HasLcCandidate,
@@ -108,6 +120,7 @@ DECLARE_SOA_TABLE(HfUpcLcBdtInfos, "AOD", "HFUPCLCBDTINFOS",
                   full::M,
                   full::Pt,
                   full::BkgScore,
+                  full::GapSide,
                   full::InteractionRate);
 
 DECLARE_SOA_TABLE(HfUpcLcInfos, "AOD", "HFUPCLCINFOS",
@@ -118,11 +131,13 @@ DECLARE_SOA_TABLE(HfUpcLcInfos, "AOD", "HFUPCLCINFOS",
                   full::PtProng2,
                   full::Chi2PCA,
                   full::DecayLength,
-                  full::Cpa);
+                  full::Cpa,
+                  full::GapSide);
 DECLARE_SOA_TABLE(HfUpcLcMcBdtInfos, "AOD", "HFUPCLCMCBDT",
                   full::M,
                   full::Pt,
                   full::BkgScore,
+                  full::GapSide,
                   full::FlagMcMatchRec,
                   full::OriginMcRec,
                   full::PtBhadMotherPart);
@@ -135,6 +150,7 @@ DECLARE_SOA_TABLE(HfUpcLcMcInfos, "AOD", "HFUPCLCMCINFO",
                   full::Chi2PCA,
                   full::DecayLength,
                   full::Cpa,
+                  full::GapSide,
                   full::FlagMcMatchRec,
                   full::OriginMcRec,
                   full::PtBhadMotherPart);
@@ -156,12 +172,16 @@ struct HfTaskUpcLc {
   Configurable<int> selectionFlagLc{"selectionFlagLc", 1, "Selection Flag for Lc"};
   Configurable<double> yCandRecoMax{"yCandRecoMax", 0.8, "max. cand. rapidity"};
   Configurable<std::vector<double>> binsPt{"binsPt", std::vector<double>{hf_cuts_lc_to_p_k_pi::vecBinsPt}, "pT bin limits"};
-  Configurable<bool> fillTreeOnlySingleGap{"fillTreeOnlySingleGap", false, "Only fill the tree for candidates that pass the single-gap UPC events"};
+  Configurable<bool> fillTreeOnlySingleGap{"fillTreeOnlySingleGap", true, "Require GapA or GapC for candidate and event QA output; false for preselection QA"};
+  Configurable<int> mcGapSide{"mcGapSide", -1, "MC generator photon direction, required for MC: 0 towards A (SingleA), 1 towards C (SingleC)"};
+  Configurable<float> gapFt0aThreshold{"gapFt0aThreshold", 100.f, "GapA: FT0A amplitude strictly below this value"};
+  Configurable<float> gapFv0aThreshold{"gapFv0aThreshold", 50.f, "GapA: FV0A amplitude strictly below this value"};
+  Configurable<float> gapFt0cThreshold{"gapFt0cThreshold", 50.f, "GapC: FT0C amplitude strictly below this value"};
   Configurable<bool> fillMcGenLcTree{"fillMcGenLcTree", false, "Fill the generated Lc to p K pi tree"};
   Configurable<bool> fillTreeUpcQa{"fillTreeUpcQa", false, "Fill Tree for UPC QA"};
   Configurable<bool> fillHistQa{"fillHistQa", false, "Fill histograms for UPC detector QA"};
   Configurable<bool> verticesWithUpc{"verticesWithUpc", false, "Consider vertices with UPC settings"};
-  Configurable<float> zdcTimeThreshold{"zdcTimeThreshold", 2., "Threshold for ZNA/ZNC time"};
+  Configurable<float> zdcTimeThreshold{"zdcTimeThreshold", 2., "Data neutron-class time threshold in ns (positive); ignored for MC"};
   Configurable<std::string> irSource{"irSource", "ZNC hadronic", "Estimator of the interaction rate (pp: T0VTX, Pb-Pb: ZNC hadronic)"};
   // CCDB configuration
   Configurable<std::string> ccdbUrl{"ccdbUrl", "http://alice-ccdb.cern.ch", "url of the ccdb repository"};
@@ -196,11 +216,51 @@ struct HfTaskUpcLc {
     NumberOfMlClasses
   };
 
+  enum GapSide : int {
+    NoSelectedGap = -1,
+    GapA = 0,
+    GapC = 1
+  };
+
+  /// Gap selection uses only the gap-side amplitudes; no activity is required on the opposite side.
+  template <bool IsMc>
+  int selectGapSide(upchelpers::FITInfo const& fitInfo, bool hasZdc, float timeZNA, float timeZNC) const
+  {
+    // Absent FIT signals retain the FITInfo default (-1), representing no activity.
+    const bool passGapA = fitInfo.ampFT0A < gapFt0aThreshold && fitInfo.ampFV0A < gapFv0aThreshold;
+    const bool passGapC = fitInfo.ampFT0C < gapFt0cThreshold;
+    if constexpr (IsMc) {
+      // The sample generator fixes the direction; MC ZDC information is never used for selection.
+      return mcGapSide == GapA ? (passGapA ? GapA : NoSelectedGap) : (passGapC ? GapC : NoSelectedGap);
+    } else {
+      if (!hasZdc || zdcTimeThreshold <= 0.f || !std::isfinite(timeZNA) || !std::isfinite(timeZNC)) {
+        return NoSelectedGap;
+      }
+      if (passGapA && std::abs(timeZNA) > zdcTimeThreshold && std::abs(timeZNC) < zdcTimeThreshold) {
+        return GapA;
+      }
+      if (passGapC && std::abs(timeZNA) < zdcTimeThreshold && std::abs(timeZNC) > zdcTimeThreshold) {
+        return GapC;
+      }
+      return NoSelectedGap;
+    }
+  }
+
   void init(InitContext&)
   {
     const std::array<bool, 4> doprocess{doprocessDataWithMlWithUpc, doprocessDataStdWithUpc, doprocessMcWithMlWithUpc, doprocessMcStdWithUpc};
     if ((std::accumulate(doprocess.begin(), doprocess.end(), 0)) != 1) {
       LOGP(fatal, "no or more than one process function enabled! Please check your configuration!");
+    }
+    const bool isMc = doprocessMcWithMlWithUpc || doprocessMcStdWithUpc;
+    if (isMc && mcGapSide != GapA && mcGapSide != GapC) {
+      LOGP(fatal, "Set mcGapSide to the sample generator photon direction: 0 (SingleA) or 1 (SingleC).");
+    }
+    if (!isMc && !(zdcTimeThreshold > 0.f)) {
+      LOGP(fatal, "Data require a positive zdcTimeThreshold for the 0nXn/Xn0n classification.");
+    }
+    if (!(gapFt0aThreshold > 0.f && gapFv0aThreshold > 0.f && gapFt0cThreshold > 0.f)) {
+      LOGP(fatal, "Gap FIT amplitude thresholds must be positive.");
     }
 
     auto vbins = std::vector<double>(binsPt);
@@ -213,6 +273,7 @@ struct HfTaskUpcLc {
     registry.add("Data/zdc/energyZNA_vs_energyZNC", "ZNA vs ZNC common energy;E_{ZNA}^{common} (a.u.);E_{ZNC}^{common} (a.u.)", {HistType::kTH2F, {{100, 0., 10}, {100, 0., 10}}});
     registry.add("Data/zdc/timeZNA_vs_timeZNC", "ZNA vs ZNC time;ZNA Time;ZNC time", {HistType::kTH2F, {{200, -10., 10}, {200, -10., 10}}});
     registry.add("Data/hUpcGapAfterSelection", "UPC gap type after selection;Gap side;Counts", {HistType::kTH1F, {{7, -1.5, 5.5}}});
+    registry.add("Data/hSelectedGapSide", "Gap side before optional rejection;Class (-1 rejected, 0 A, 1 C);Counts", {HistType::kTH1F, {{3, -1.5, 1.5}}});
     registry.add("Data/hUpcMulti", "Multiplicity of UPC events;Multiplicity;Counts", {HistType::kTH1F, {{200, -0.5, 199.5}}});
     registry.add("Data/hUpcVtz", "Vertex Z position of UPC events;Vz (cm);Counts", {HistType::kTH1F, {{200, -10., 10.}}});
     registry.add("Data/eta_vs_Multi_A", "Eta vs Multiplicity of Gap A Events;Eta;Multiplicity", {HistType::kTH2F, {{20, -1., 1.}, {200, -0.5, 199.5}}});
@@ -290,8 +351,6 @@ struct HfTaskUpcLc {
       float zdcEnergyZNC = -1.f;
       float zdcTimeZNA = -1.f;
       float zdcTimeZNC = -1.f;
-      bool gapA0nXn = false;
-      bool gapCXn0n = false;
 
       if (verticesWithUpc && !upcFlag) {
         continue;
@@ -308,7 +367,6 @@ struct HfTaskUpcLc {
           registry.fill(HIST("Data/zdc/energyZNA_vs_energyZNC"), zdcEnergyZNA, zdcEnergyZNC);
           registry.fill(HIST("Data/zdc/timeZNA_vs_timeZNC"), zdcTimeZNA, zdcTimeZNC);
         }
-        registry.fill(HIST("Data/hUpcGapAfterSelection"), static_cast<int>(gap));
       }
       if constexpr (!IsMc) {
         if (!hasZdc) {
@@ -319,23 +377,15 @@ struct HfTaskUpcLc {
         if (!hasZdc && fillHistQa) {
           registry.fill(HIST("Data/fitInfo/ampFT0A_vs_ampFT0C"), fitInfo.ampFT0A, fitInfo.ampFT0C);
         }
-        if (!hasZdc) {
-          registry.fill(HIST("Data/hUpcGapAfterSelection"), static_cast<int>(gap));
-        }
       }
-      bool ignoreZdcTime = (zdcTimeThreshold < 0.f);
-      if constexpr (IsMc) {
-        ignoreZdcTime = ignoreZdcTime || !hasZdc;
+      if constexpr (!IsMc) {
+        registry.fill(HIST("Data/hUpcGapAfterSelection"), gap);
       }
+      const int selectedGap = selectGapSide<IsMc>(fitInfo, hasZdc, zdcTimeZNA, zdcTimeZNC);
+      registry.fill(HIST("Data/hSelectedGapSide"), selectedGap);
       const auto multNTracksPV = collision.multNTracksPV();
       const auto posZ = collision.posZ();
-      if (gap == o2::aod::sgselector::TrueGap::SingleGapA && (ignoreZdcTime || (std::abs(zdcTimeZNA) > zdcTimeThreshold && std::abs(zdcTimeZNC) < zdcTimeThreshold))) {
-        gapA0nXn = true;
-      }
-      if (gap == o2::aod::sgselector::TrueGap::SingleGapC && (ignoreZdcTime || (std::abs(zdcTimeZNA) < zdcTimeThreshold && std::abs(zdcTimeZNC) > zdcTimeThreshold))) {
-        gapCXn0n = true;
-      }
-      if (fillTreeOnlySingleGap && !gapA0nXn && !gapCXn0n) {
+      if (fillTreeOnlySingleGap && selectedGap == NoSelectedGap) {
         continue;
       }
       registry.fill(HIST("Data/hUpcMulti"), multNTracksPV);
@@ -374,10 +424,10 @@ struct HfTaskUpcLc {
         const auto eta = candidate.eta();
 
         double outputBkg(-1);
-        if (gapA0nXn) {
+        if (selectedGap == GapA) {
           registry.fill(HIST("Data/eta_vs_Multi_A"), eta, multNTracksPV);
         }
-        if (gapCXn0n) {
+        if (selectedGap == GapC) {
           registry.fill(HIST("Data/eta_vs_Multi_C"), eta, multNTracksPV);
         }
 
@@ -389,9 +439,9 @@ struct HfTaskUpcLc {
               if (mlProb.size() == NumberOfMlClasses) {
                 outputBkg = mlProb[MlClassBackground]; /// bkg score
               }
-              rowCandUpcMcBdt(massLc, pt, outputBkg, candidate.flagMcMatchRec(), candidate.originMcRec(), candidate.ptBhadMotherPart());
+              rowCandUpcMcBdt(massLc, pt, outputBkg, selectedGap, candidate.flagMcMatchRec(), candidate.originMcRec(), candidate.ptBhadMotherPart());
             } else {
-              rowCandUpcMc(massLc, pt, ptProng0, ptProng1, ptProng2, chi2PCA, decayLength, cpa, candidate.flagMcMatchRec(), candidate.originMcRec(), candidate.ptBhadMotherPart());
+              rowCandUpcMc(massLc, pt, ptProng0, ptProng1, ptProng2, chi2PCA, decayLength, cpa, selectedGap, candidate.flagMcMatchRec(), candidate.originMcRec(), candidate.ptBhadMotherPart());
             }
             return;
           }
@@ -401,10 +451,10 @@ struct HfTaskUpcLc {
               outputBkg = mlProb[MlClassBackground]; /// bkg score
             }
             /// Fill the ML outputScores and variables of candidate
-            rowCandUpcBdt(massLc, pt, outputBkg, interactionRate);
+            rowCandUpcBdt(massLc, pt, outputBkg, selectedGap, interactionRate);
 
           } else {
-            rowCandUpc(massLc, pt, ptProng0, ptProng1, ptProng2, chi2PCA, decayLength, cpa);
+            rowCandUpc(massLc, pt, ptProng0, ptProng1, ptProng2, chi2PCA, decayLength, cpa, selectedGap);
           }
         };
 
@@ -417,7 +467,7 @@ struct HfTaskUpcLc {
       }
       if (fillTreeUpcQa) {
         // One QA row per selected collision, including collisions without Lc candidates.
-        rowUpcQa(numPvContributors, multNTracksPV, posZ, fitInfo.ampFT0A, fitInfo.ampFT0C, zdcTimeZNA, zdcTimeZNC, hasLcCandidate, interactionRate);
+        rowUpcQa(numPvContributors, multNTracksPV, posZ, fitInfo.ampFT0A, fitInfo.ampFT0C, fitInfo.ampFV0A, selectedGap, zdcTimeZNA, zdcTimeZNC, hasLcCandidate, interactionRate);
       }
     }
   }
