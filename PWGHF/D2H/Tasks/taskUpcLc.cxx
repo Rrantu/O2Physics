@@ -26,7 +26,6 @@
 #include "PWGHF/DataModel/TrackIndexSkimmingTables.h"
 #include "PWGHF/Utils/utilsEvSelHf.h"
 #include "PWGHF/Utils/utilsUpcHf.h"
-#include "PWGUD/Core/SGSelector.h"
 #include "PWGUD/Core/UPCHelpers.h"
 
 #include "Common/CCDB/ctpRateFetcher.h"
